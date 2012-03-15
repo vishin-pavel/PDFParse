@@ -10,15 +10,21 @@ class PDFEngine implements \PageFormatHandler{
 	private $filePointer=NULL;
 	private $fileSize = 0;
 	private $currentPage=0;
+    public $root;
 	public $RefTable=array();
 	public $RefTableNext = array();
 	public $pageTable=array();
+
+    public $mapBook = array();
+    public $keyMaintenance = array();
+
 	public function __construct($file){
 		$this->filePath= $file;
 		$this->filePointer = fopen($this->filePath, 'rb');
 		$this->fileSize = filesize($this->filePath);
 		$this->get_ref_table();
 		$this->get_page_table();
+
 		//ToDo: Получить осноыную информацию о файле
 		//Todo: Загрузить общие данные о дркументе
 				//Todo: Загрузить список страниц
@@ -38,6 +44,9 @@ class PDFEngine implements \PageFormatHandler{
 	 */
 	public function get_page($pageNum = 1){
 		$page = new Page($pageNum, $this);
+        $page ->getMaintenance(); //Функция парсит содержание
+        //$page -> getImg(); //Функция парсит картинки
+        //return $page->get_text()->getImage()->parseHTML();
 
 	}
 	/**
@@ -134,6 +143,10 @@ class PDFEngine implements \PageFormatHandler{
 
 		fseek($this->filePointer, -32, SEEK_END);
 		$nextTableLink='';
+       // $nextTableLink = fgets($this->filePointer);
+       // preg_match('/.*startxref.*?(\d+).*/', $nextTableLink, $xref);
+       // $nextTableLink = (int)$xref['1'];
+
 		while(preg_match('/startxref/', $nextTableLink)!=1 && $nextTableLink!==false){
 			$nextTableLink = fgets($this->filePointer);
 		}
@@ -153,10 +166,17 @@ class PDFEngine implements \PageFormatHandler{
 			}
 			fgets($this->filePointer);
 			$currentString = fgets($this->filePointer);
-			if(preg_match('/\x2FPrev\x20(\d+)/', $currentString, $matches)==1)
+			if(preg_match('/\x2FPrev\x20(\d+)/', $currentString, $matches)==1) {
 				$nextTableLink = $matches[1]+0;
-			else
+            }
+			else {
 				$lastTable = true;
+            }
+
+            if(!isset($this -> root)) {
+                  preg_match('/\x2FRoot\x20(\d+)/', $currentString, $root);
+                  $this -> root = (int)$root[1];
+            }
 		}
 		asort($this->RefTable, SORT_NUMERIC);
 		reset($this->RefTable);
@@ -265,7 +285,8 @@ class Page extends AbstractPDFObject{
 						'contObj'=>NULL,
 						'text'=>'',
 						'concatContent'=>'',
-						'resources'=>array()
+						'resources'=>array(),
+                        'paramImg' => ''
 						);
 	/**
 	 * Конструктор. При инициализации обзекта находит все ресурсы объекта и парсит их в атомарные для данной абстракции
@@ -298,7 +319,103 @@ class Page extends AbstractPDFObject{
 		$this->data['resources'][] = new Resource;
 		return end($this->data['resources']);
 	}
-}
-class Resource extends AbstractPDFObject{
-	//ToDo: написать функции для работы с картинками
+
+    public function getImg() {
+
+        preg_match_all('/q.*Q/ismUe',$this->data['concatContent'],$pageImg);
+
+        for($i=0; $i<count($pageImg['0']);$i++) {
+
+            preg_match('/\/image([\d]+)/ie',$pageImg['0'][$i],$parImg);
+            $object = $this->parentPDFEngine->get_obj_by_key($parImg["1"]);
+
+            preg_match('/stream(.*)endstream/ismU',$object, $codeImg);
+            $codeImg[1] = trim($codeImg[1]);
+
+            $this -> data['paramImg'][$i] = array();
+
+            preg_match('/n(.*)cm/ismU',$pageImg['0'][$i], $coordinateImg);
+            preg_match_all('/[\d]+[\.]?[\d]*/',$coordinateImg['1'], $coordinateImg);
+            $this -> data['paramImg'][$i]['scaleWidth'] = (float)$coordinateImg['0']['0'];
+            $this -> data['paramImg'][$i]['smehWidth'] = (float)$coordinateImg['0']['1'];
+            $this -> data['paramImg'][$i]['smehHeight'] = (float)$coordinateImg['0']['2'];
+            $this -> data['paramImg'][$i]['scaleHeight'] = (float)$coordinateImg['0']['3'];
+            $this -> data['paramImg'][$i]['x'] = (float)$coordinateImg['0']['4'];
+            $this -> data['paramImg'][$i]['y'] = (float)$coordinateImg['0']['5'];
+
+            preg_match('/width[\s]?([0-9]+)/i',$object, $width);
+            $this -> data['paramImg'][$i]['width'] = (float)$width['1'];
+
+            preg_match('/height[\s]?([\d]+)/i',$object, $height);
+            $this -> data['paramImg'][$i]['height'] = (float)$height['1'];
+            $this -> data['paramImg'][$i]['nameImg'] = (string)'img'.$parImg['1'].'.jpg';
+
+            $myImg = fopen('images/img'.$parImg['1'].'.jpg',"w");
+            fwrite($myImg,$codeImg[1]);
+            fclose($myImg);
+        }
+
+        return $this;
+    }
+
+    public function rekurs($first, $last) {
+
+        $current = $first;
+        while($current != $last) {
+
+            $object = $this->parentPDFEngine->get_obj_by_key($current);
+            preg_match('/(First\s(\d+)).*(Last\s(\d+))/',$object,$objMaintenance);
+            $currentFirst = $objMaintenance['2'];
+            $currentLast = $objMaintenance['4'];
+
+            preg_match('/Next\s(\d+)/', $object, $objMaintenance);
+            $this-> parentPDFEngine -> keyMaintenance[] = $objMaintenance['1'];
+
+            preg_match('/Title\((.*)\)/',$object,$titleText);
+            $data[] = $titleText['1'];
+            $current = $objMaintenance['1'];
+
+            if($currentFirst) {
+
+                $data[] = $this -> rekurs($currentFirst, $currentLast);
+
+            }
+        }
+
+        if(!$currentFirst) {
+
+            $object = $this->parentPDFEngine->get_obj_by_key($current);
+            preg_match('/Title\((.*)\)/',$object, $titleText);
+            $data[] = $titleText['1'];
+
+        }
+
+        return $data;
+
+    }
+
+    public function getMaintenance() {
+
+        $object = $this->parentPDFEngine->get_obj_by_key($this->parentPDFEngine->root);
+
+        if(preg_match('/\/Outlines\s(\d+)/',$object,$objMaintenance) == true)
+        {
+            $object = $this->parentPDFEngine->get_obj_by_key($objMaintenance['1']);
+
+            preg_match('/(First\s(\d+)).*(Last\s(\d+))/',$object,$objMaintenance);
+
+            $first = $objMaintenance['2'];
+            $last = $objMaintenance['4'];
+
+            $this -> parentPDFEngine -> mapBook = $this -> rekurs($first, $last);
+
+            return $this;
+
+        }
+        else
+        {
+            return false;
+        }
+
+    }
 }

@@ -19,5 +19,6 @@ function __autoload($classname) {
 		}
 	}
 }
-$converter = new Converter('edited.pdf');
+$converter = new Converter('primer3.pdf');
 $converter->run();
+
